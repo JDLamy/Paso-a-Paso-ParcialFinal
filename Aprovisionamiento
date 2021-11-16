@@ -1,0 +1,86 @@
+2.(Funcionamiento + Sustentación) APROVISIONAMIENTO. Utilice los servicios de aprovisionamiento que provee Vagrant usando Shell para que los servicios del punto anterior 
+(Firewall + Streama) queden provisionados de manera automática.
+
+#Vagrantfile con aprovicionamiento
+
+Vagrant.configure("2") do |config|
+ config.vm.define :firewall do |firewall|
+  firewall.vm.box = "bento/centos-7.9"
+  firewall.vm.network :private_network, ip: "192.168.50.2"
+  firewall.vm.network :public_network, bridge: "Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC", ip: "192.168.1.54"
+  firewall.vm.provision "shell", path: "firewallscript.sh" #Se agrega esta linea
+  firewall.vm.hostname = "firewall"
+ end
+ config.vm.define :servidorSTRM do |servidorSTRM|
+  servidorSTRM.vm.box = "bento/centos-7.9"
+  #servidorSTRM.vm.network :public_network, bridge: "Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC", ip: "192.168.1.55"
+  servidorSTRM.vm.network :private_network, ip: "192.168.50.3"
+  servidorSTRM.vm.provision "shell", path: "servidorSTREAMA.sh" #Se agrega esta linea
+  servidorSTRM.vm.hostname = "servidorSTRM"
+  servidorSTRM.vm.provision "shell", path: "servidorSTREAMA2.sh" #Se agrega esta linea
+ end
+end
+
+#Creamos dentro de nuestra carpeta el archivo firewallscript.sh y dentro de el
+
+#!/bin/bash
+#instalacion de vim
+sudo -i
+sudo yum install -y vim
+#Configuracion del firewall
+service firewall start
+#Networkmanager
+service NetworkManager stop
+chkconfig NetworkManager off
+#asignar eth1
+firewall-cmd --permanent --zone=dmz --add-interface=eth1
+firewall-cmd --permanent --zone=internal --add-interface=eth2
+firewall-cmd --reload
+#reglas
+firewall-cmd --direct  --permanent --add-rule ipv4 nat POSTROUTING 0 -o eth1 -j MASQUERADE
+firewall-cmd --direct  --permanent --add-rule ipv4 filter FORWARD 0 -i eth2 -o eth1 -j ACCEPT
+firewall-cmd --direct  --permanent --add-rule ipv4 filter FORWARD 0 -i eth1 -o eth2 -m state --state RELATED,ESTABLISHED -j ACCEPT
+#agregar servicio http
+firewall-cmd --permanent --zone=dmz --add-service=http
+#agregar protocolo
+sudo firewall-cmd --zone=dmz --add-port=8080/tcp --permanent
+#agregar redireccionamiento
+firewall-cmd --zone="dmz" --add-forward-port=port=8080:proto=tcp:toport=8080:toaddr=192.168.50.3 --permanent
+firewall-cmd --zone="internal" --add-forward-port=port=8080:proto=tcp:toport=8080:toaddr=192.168.50.3 --permanent
+firewall-cmd --permanent --zone=dmz --add-masquerade --permanent
+firewall-cmd --reload
+
+#Creamos dentro de nuestra carpeta los archivos ServidorSTREAMA.sh y ServidorSTREAMA2.sh y dentro de ellos
+
+#ServidorSTREAMA.sh
+#!/bin/bash
+sudo -i
+#instalar wget
+yum install wget -y
+#Descarga de Java
+sudo wget --no-cookies --no-check-certificate --header "Cookie:oraclelicense=accept-securebackup-cookie" "http://download.oracle.com/otn-pub/java/jdk/8u131-b11/d54c1d3a095b4ff2b6607d096fa80163/jdk-8u131-linux-x64.rpm"
+#Instalar Java
+yum -y localinstall jdk-8u131-linux-x64.rpm
+#Descargar Streama
+wget https://github.com/dularion/streama/releases/download/v1.1/streama-1.1.war
+#Crear carpeta
+sudo mkdir /opt/streama
+#copia
+sudo mv streama-1.1.war /opt/streama/streama.war
+#correr
+java -jar /opt/streama/streama.war
+#Crear carpeta
+sudo mkdir /opt/streama/media
+#Privilegios
+sudo chmod 664 /opt/streama/media
+
+#ServidorSTREAMA2.sh
+sudo -i
+#Iniciar streama
+sudo service streama start
+#Instalar httpd
+sudo yum -y install httpd mod_ssl
+#Iniciar httpd
+systemctl start httpd
+
+
