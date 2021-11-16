@@ -1,0 +1,168 @@
+#1.(Funcionamiento + Sustentación)] SERVICIO + FIREWALL. Instalar el servidor de streaming Streama protegido por 
+Firewall como se muestra en la figura. Todas las solicitudes hacia el servidor Streama deberán ser realizadas 
+al firewall y no directamente al servicio configurado. El firewall debe redirigir las peticiones al servicio. 
+Compruebe el funcionamiento desde el navegador del anfitrión y del SmartPhone.
+
+#vagrantfile
+
+Vagrant.configure("2") do |config|
+ config.vm.define :firewall do |firewall|
+  firewall.vm.box = "bento/centos-7.9"
+  firewall.vm.network :private_network, ip: "192.168.50.2"
+  firewall.vm.network :public_network, bridge: "Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC", ip: "192.168.1.54"
+  firewall.vm.hostname = "firewall"
+ end
+ config.vm.define :servidorSTRM do |servidorSTRM|
+  servidorSTRM.vm.box = "bento/centos-7.9"
+  #servidorSTRM.vm.network :public_network, bridge: "Realtek 8822CE Wireless LAN 802.11ac PCI-E NIC", ip: "192.168.1.55"
+  servidorSTRM.vm.network :private_network, ip: "192.168.50.3"
+  servidorSTRM.vm.hostname = "servidorSTRM"
+ end
+end
+
+#Configuración Servidor Streama
+sudo -i
+
+#REALIZAR EL WGET Y DESCARGAR EL JAVA.RPM
+wget --no-cookies --no-check-certificate --header "Cookie:oraclelicense=accept-securebackup-cookie" "http://download.oracle.com/otn-pub/java/jdk/8u131-b11/d54c1d3a095b4ff2b6607d096fa80163/jdk-8u131-linux-x64.rpm"
+
+#INSTALAR EL JAVA
+yum -y localinstall jdk-8u131-linux-x64.rpm
+
+#Descargar el war streama
+wget https://github.com/dularion/streama/releases/download/v1.1/streama-1.1.war
+
+#Creamos una carpeta en /opt/streama y movemos el archivo descargado
+mkdir /opt/streama
+mv streama-1.1.war /opt/streama/streama.war
+
+#Ejecutar el archivo java
+java -jar /opt/streama/streama.war
+
+#Movemos los archivos .db a la ruta /opt/streama/
+mv streama.mv.db /opt/streama/
+mv streama.trace.db /opt/streama/
+
+#Crear carpeta media en /opt/streama/
+mkdir /opt/streama/media
+
+#Damos permisos a la carpeta media
+chmod 664 /opt/streama/media
+
+#Crear el servicio streama “Para poder reiniciarlo como httpd u otro
+vim /etc/systemd/system/streama.service
+
+Description=Streama Server
+After=syslog.target
+After=network.target
+
+[Service]
+User=root
+Type=simple
+ExecStart=/bin/java -jar /opt/streama/streama.war
+Restart=always
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=Streama
+
+#Iniciar el servicio
+service streama start
+
+#Para que el servicio inicie junto al sistema
+systemctl enable streama
+systemctl status streama
+
+#Instalar el servidor web Apache y mod_ssl
+yum -y instalar httpd mod_ssl
+
+#iniciar el servidor web Apache y habilitarlo
+systemctl enable httpd
+systemctl status httpd
+
+#Instalar y actualizar epel
+yum -y install epel-release 
+yum -y update
+
+#Instale Certbot
+yum -y install python-certbot-apache
+
+#ejecutar la utilidad Certbot para obtener solo los certificados
+certbot certonly --apache -d streama.elrincondeyogui.com
+
+#Configurar una renovación automática para los certificados.
+crontab -e
+#pegar linea de codigo
+30 1 * * 1 / usr / bin / certbot renovar >> /var/log/le-renew.log
+
+#Crear un nuevo host virtual
+vim /etc/httpd/conf.d/streama.elrincondeyogui.com.conf
+
+<VirtualHost *:80>
+    ServerName streama.alejogzlz.com
+    Redirect permanent / https://streama.elrincondeyogui.com/    TransferLog /var/log/httpd/streama.elrincondeyogui.com_access.log
+    ErrorLog /var/log/httpd/streama.elrincondeyogui.com_error.log
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName streama.elrincondeyogui.com
+    ServerAdmin email@elrincondeyogui.com
+    ProxyPreserveHost On
+    ProxyPass / http://localhost:8080/
+    ProxyPassReverse / http://localhost:8080/
+    TransferLog /var/log/httpd/streama.elrincondeyogui.com_ssl_access.log
+    ErrorLog /var/log/httpd/streama.elrincondeyogui.com_ssl_error.log
+</VirtualHost>
+
+#Reinicie el servidor web Apache
+systemctl restart httpd
+
+#Para deshabilitar completamente SELinux, necesitará editar el archivo /etc/selinux/config
+vim /etc/selinux/config/
+#Cambiamos
+SELINUX=permisite
+#Por
+SELINUX=disabled
+
+#Reiniciar el servicio
+service streama restart
+
+
+#Configuración Servidor Firewall
+
+#Para evitar algún tipo de conflicto en la configuración de nuestro Firewall detenemos nuestro “NetworkManager”:
+
+service NetworkManager stop
+chkconfig NetworkManager off
+ 
+#Modificar el sysctl.conf y agregar net.ipv4.ip_forward = 1
+vim /etc/sysctl.conf
+ejecutar sysctl -p
+
+#Ahora debemos definir Zonas en firewallNAT:
+#Zona internal, para la interfaz que va con la red privada eth2
+#Zona dmz, para la interfaz que va con la red pública eth1
+firewall-cmd --get-zones
+firewall-cmd --list-all-zones
+ 
+#Asignamos interfaces a cada una 
+firewall-cmd --permanent --zone=dmz --add-interface=eth1
+firewall-cmd --permanent --zone=internal --add-interface=eth2
+firewall-cmd --reload
+firewall-cmd --list-all-zones
+firewall-cmd --zone=internal --change-interface=eth1
+ 
+#Generar las siguientes reglas
+firewall-cmd --direct  --permanent --add-rule ipv4 nat POSTROUTING 0 -o eth1 -j MASQUERADE
+firewall-cmd --direct  --permanent --add-rule ipv4 filter FORWARD 0 -i eth2 -o eth1 -j ACCEPT
+firewall-cmd --direct  --permanent --add-rule ipv4 filter FORWARD 0 -i eth1 -o eth2 -m state --state RELATED,ESTABLISHED -j ACCEPT
+ 
+#Agregar el servicio http a el firewall
+firewall-cmd --permanent --zone=dmz --add-service=http
+
+#Agregar el protocolo con el puerto
+firewall-cmd --zone=dmz --add-port=8080/tcp --permanent 
+
+#Agregar redireccionamiento
+firewall-cmd --zone="dmz" --add-forward-port=port=8080:proto=tcp:toport=8080:toaddr=192.168.50.3  --permanent
+firewall-cmd --zone="internal" --add-forward-port=port=8080:proto=tcp:toport=8080:toaddr=192.168.50.3 --permanent
+firewall-cmd --reload
